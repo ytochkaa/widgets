@@ -5,27 +5,30 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QPainter>
-#include <QPdfWriter>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QVBoxLayout>
-#include "chart/BarChart.h"
-#include "chart/IChart.h"
-#include "chart/LineChart.h"
-#include "chart/PieChart.h"
-#include "data/IDataReader.h"
-#include "data/JsonReader.h"
-#include "data/SqliteReader.h"
-#include "style/ColorStyle.h"
-#include "style/GrayStyle.h"
-#include "style/IChartStyle.h"
 
 QT_CHARTS_USE_NAMESPACE
 
-MainWindow::MainWindow(IOCContainer& container, QWidget* parent)
-    : QMainWindow(parent), container(container), logger(container.GetObject<ILogger>())
+MainWindow::MainWindow(std::shared_ptr<ILogger> logger, ReaderFactories readers, ChartFactories charts,
+                       ObjectFactory<IChartStyle> colorStyle, ObjectFactory<IChartStyle> grayStyle,
+                       std::shared_ptr<IChartExporter> exporter, QWidget* parent)
+    : QMainWindow(parent)
+    , logger(logger)
+    , readers(std::move(readers))
+    , charts(std::move(charts))
+    , colorStyle(std::move(colorStyle))
+    , grayStyle(std::move(grayStyle))
+    , exporter(exporter)
 {
+    // Начальные тип графика и стиль: первый в списке и цветной
+    if (!this->charts.empty()) {
+        currentChart = this->charts.front().second();
+    }
+    currentStyle = this->colorStyle();
+
     setWindowTitle("PrintChart");
     resize(1400, 700);
 
@@ -55,7 +58,9 @@ MainWindow::MainWindow(IOCContainer& container, QWidget* parent)
 
     // Правая часть: настройки графика и сам график
     chartTypeBox = new QComboBox();
-    chartTypeBox->addItems({"BarChart", "PieChart", "LineChart"});
+    for (const auto& chart : this->charts) {
+        chartTypeBox->addItem(chart.first);
+    }
     grayCheck = new QCheckBox("Черно-белый график");
     QPushButton* printButton = new QPushButton("Печать графика");
 
@@ -113,16 +118,13 @@ void MainWindow::selectFile(const QItemSelection& selected, const QItemSelection
     QString suffix = QFileInfo(path).suffix().toLower();
 
     // Выбираем реализацию чтения по расширению файла
-    if (suffix == "sqlite") {
-        container.RegisterFactory<IDataReader, SqliteReader, ILogger>();
-    } else if (suffix == "json") {
-        container.RegisterFactory<IDataReader, JsonReader, ILogger>();
-    } else {
+    auto reader = readers.find(suffix);
+    if (reader == readers.end()) {
         statusBar()->showMessage("Формат не поддерживается: " + QFileInfo(path).fileName());
         return;
     }
 
-    QVector<DataPoint> newPoints = container.GetObject<IDataReader>()->read(path);
+    QVector<DataPoint> newPoints = reader->second()->read(path);
     if (newPoints.isEmpty()) {
         statusBar()->showMessage("Не удалось прочитать данные из " + QFileInfo(path).fileName());
         return;
@@ -135,23 +137,16 @@ void MainWindow::selectFile(const QItemSelection& selected, const QItemSelection
 
 void MainWindow::changeChartType(int index)
 {
-    if (index == 0) {
-        container.RegisterFactory<IChart, BarChart>();
-    } else if (index == 1) {
-        container.RegisterFactory<IChart, PieChart>();
-    } else {
-        container.RegisterFactory<IChart, LineChart>();
+    if (index < 0 || index >= static_cast<int>(charts.size())) {
+        return;
     }
+    currentChart = charts[index].second();
     redraw();
 }
 
 void MainWindow::changeStyle(bool gray)
 {
-    if (gray) {
-        container.RegisterInstance<IChartStyle, GrayStyle>();
-    } else {
-        container.RegisterInstance<IChartStyle, ColorStyle>();
-    }
+    currentStyle = gray ? grayStyle() : colorStyle();
     redraw();
 }
 
@@ -162,39 +157,27 @@ void MainWindow::printChart()
         return;
     }
 
-    QString path = QFileDialog::getSaveFileName(this, "Сохранить график", QDir::homePath() + "/chart.pdf",
-                                                "PDF (*.pdf)");
+    QString path = QFileDialog::getSaveFileName(this, "Сохранить график",
+                                                QDir::homePath() + "/" + exporter->defaultFileName(),
+                                                exporter->fileFilter());
     if (path.isEmpty()) {
         return;
     }
 
-    QPdfWriter writer(path);
-    writer.setPageSize(QPageSize(QPageSize::A4));
-    writer.setPageOrientation(QPageLayout::Landscape);
-
-    QPainter painter(&writer);
-    if (!painter.isActive()) {
-        logger->logError("Не удалось создать PDF " + path);
-        statusBar()->showMessage("Не удалось сохранить PDF");
+    if (!exporter->exportChart(chartView, path)) {
+        statusBar()->showMessage("Не удалось сохранить график");
         return;
     }
-    chartView->render(&painter);
-    painter.end();
-
     statusBar()->showMessage("График сохранён: " + path);
-    logger->logInfo("График сохранён в " + path);
 }
 
 void MainWindow::redraw()
 {
-    if (points.isEmpty()) {
+    if (points.isEmpty() || !currentChart || !currentStyle) {
         return;
     }
 
-    std::shared_ptr<IChart> chart = container.GetObject<IChart>();
-    std::shared_ptr<IChartStyle> style = container.GetObject<IChartStyle>();
-
     QChart* oldChart = chartView->chart();
-    chartView->setChart(chart->buildGraf(points, *style));
+    chartView->setChart(currentChart->buildGraf(points, *currentStyle));
     delete oldChart;
 }

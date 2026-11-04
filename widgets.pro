@@ -18,7 +18,9 @@ SOURCES += \
     chart/BarChart.cpp \
     chart/PieChart.cpp \
     chart/LineChart.cpp \
+    exporter/PdfExporter.cpp \
     gui/MainWindow.cpp \
+    gui/AppCompositor.cpp \
     main.cpp
 
 HEADERS += \
@@ -36,4 +38,7 @@ HEADERS += \
     chart/BarChart.h \
     chart/PieChart.h \
     chart/LineChart.h \
-    gui/MainWindow.h
+    exporter/IChartExporter.h \
+    exporter/PdfExporter.h \
+    gui/MainWindow.h \
+    gui/AppCompositor.h

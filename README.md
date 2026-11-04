@@ -45,13 +45,14 @@ CREATE TABLE [HUMIDITY_MOSCOW] ([Time] Datetime, [Value] Float)
 
 ```
 widgets/
-├── main.cpp      точка входа: регистрация реализаций по умолчанию в IoC-контейнере
+├── main.cpp      точка входа: создаёт IoC-контейнер и главное окно
 ├── ioc/          IoC-контейнер
 ├── logger/       логирование
 ├── data/         точки данных и чтение файлов
 ├── style/        визуальные стили графиков
 ├── chart/        виды графиков
-├── gui/          главное окно
+├── exporter/     сохранение графика в файл (PDF)
+├── gui/          главное окно и точка композиции
 └── test_data/    тестовые данные и тест-кейсы
 ```
 
@@ -76,29 +77,48 @@ widgets/
   - `BarChart` — столбчатая диаграмма
   - `PieChart` — круговая диаграмма
   - `LineChart` — линейный график
+- `exporter/`
+  - `IChartExporter` — интерфейс сохранения графика в файл
+  - `PdfExporter` — сохранение в PDF (A4, альбомная ориентация)
 - `gui/`
+  - `AppCompositor` (`CreateMainWindow`) — точка композиции: регистрирует все реализации в IoC-контейнере и создаёт окно
   - `MainWindow` — главное окно: список файлов, настройки и область графика
 
 ### Внедрение зависимостей
 
-`MainWindow` работает только с интерфейсами `IDataReader`, `IChart` и `IChartStyle` и не создаёт конкретные классы сама. Реализации регистрируются в `IOCContainer`, а окно получает их через `GetObject`:
+Все конкретные классы известны только точке композиции `CreateMainWindow` (`gui/AppCompositor.cpp`). При запуске она один раз регистрирует в `IOCContainer` все реализации:
 
-| Действие пользователя        | Что регистрируется в контейнере                          |
-|------------------------------|----------------------------------------------------------|
-| запуск программы (`main`)    | `ILogger` → `ConsoleLogger`, `IChart` → `BarChart`, `IChartStyle` → `ColorStyle` |
-| выбор файла `.sqlite`        | `IDataReader` → `SqliteReader` (с внедрённым `ILogger`)  |
-| выбор файла `.json`          | `IDataReader` → `JsonReader` (с внедрённым `ILogger`)    |
-| выбор типа диаграммы         | `IChart` → `BarChart` / `PieChart` / `LineChart`         |
-| галочка «Черно-белый график» | `IChartStyle` → `GrayStyle` / `ColorStyle`               |
+| Регистрация | Способ | Зависимости |
+|-------------|--------|-------------|
+| `ILogger` → `ConsoleLogger` | `RegisterInstance` — один объект на приложение | — |
+| `SqliteReader`, `JsonReader` | `RegisterFactory` — новый объект на каждый запрос | `ILogger` |
+| `BarChart`, `PieChart`, `LineChart` | `RegisterFactory` | — |
+| `ColorStyle`, `GrayStyle` | `RegisterInstance` | — |
+| `IChartExporter` → `PdfExporter` | `RegisterFactory` | `ILogger` |
 
-Перерисовка графика (`redraw`) берёт из контейнера текущие `IChart` и `IChartStyle` и вызывает `buildGraf`.
+Контейнер хранит одну реализацию на тип, поэтому варианты, из которых пользователь выбирает во время работы, собраны в словари «ключ → получение объекта из контейнера»:
+
+- `readers` — чтение по расширению файла: `"sqlite"` → `SqliteReader`, `"json"` → `JsonReader`;
+- `charts` — типы графиков в порядке списка: `BarChart`, `PieChart`, `LineChart`;
+- `colorStyle` и `grayStyle` — получение цветного и чёрно-белого стиля.
+
+`MainWindow` получает логгер, словари и экспортёр через конструктор. Окно знает только интерфейсы `ILogger`, `IDataReader`, `IChart`, `IChartStyle`, `IChartExporter`, ничего не регистрирует в контейнере и не подключает заголовки конкретных классов.
+
+| Действие пользователя        | Что делает окно |
+|------------------------------|-----------------|
+| выбор файла `.sqlite` / `.json` | берёт читателя из `readers` по расширению; контейнер создаёт его и передаёт ему `ILogger` |
+| выбор типа диаграммы         | берёт график из `charts` по номеру пункта и запоминает в `currentChart` |
+| галочка «Черно-белый график» | запоминает в `currentStyle` `grayStyle()` или `colorStyle()` |
+| «Печать графика»             | вызывает `IChartExporter::exportChart` |
+
+Перерисовка графика (`redraw`) вызывает `buildGraf` у `currentChart` с `currentStyle`.
 
 ### Как добавить новый график
 
 1. Создать в папке `chart/` класс-наследник `IChart` и реализовать в нём `buildGraf`.
-2. Добавить название в список `chartTypeBox` и одну ветку `RegisterFactory<IChart, НовыйГрафик>()` в `MainWindow::changeChartType`.
+2. В `CreateMainWindow` зарегистрировать его (`RegisterFactory<НовыйГрафик, НовыйГрафик>()`) и добавить строку в словарь `charts`. Название появится в списке типов само, `MainWindow` не меняется.
 
-Новый стиль или формат файла добавляется так же: наследник `IChartStyle` или `IDataReader` и одна регистрация в контейнере.
+Новый стиль, формат файла или формат сохранения добавляется так же: наследник `IChartStyle`, `IDataReader` или `IChartExporter`, одна регистрация и одна строка в точке композиции.
 
 ## Как работает программа
 
@@ -131,8 +151,9 @@ widgets/
 - Если файл не прочитался (ошибка или пустой), `points` не меняется и остаётся последний удачный график.
 - Сами `points` никогда не изменяются. Для графика `groupPoints` делает **временную копию**: 10 средних значений для столбчатой и круговой диаграмм, до 1000 для линейного графика.
 - Время жизни объектов из контейнера:
-  - `ILogger` и `IChartStyle` регистрируются через `RegisterInstance`, это один объект на всё приложение;
-  - `IDataReader` и `IChart` регистрируются через `RegisterFactory`, и при каждом `GetObject` создаётся новый объект. Он живёт, пока работает метод, и затем удаляется (`shared_ptr`).
+  - `ILogger`, `ColorStyle` и `GrayStyle` регистрируются через `RegisterInstance`, это один объект на всё приложение;
+  - читатели, графики и `PdfExporter` регистрируются через `RegisterFactory`, и при каждом `GetObject` создаётся новый объект (`shared_ptr`). Читатель живёт, пока работает `selectFile`; текущий график хранится в `currentChart` до смены типа; экспортёр создаётся один раз и хранится в окне.
+  - Контейнер создаётся в `main` раньше окна, поэтому живёт дольше него: словари окна обращаются к контейнеру во время работы.
 - Новый `QChart` передаётся в `chartView`, а предыдущий удаляется в `redraw()`.
 
 ### Путь данных: от файла до графика и PDF
@@ -156,19 +177,19 @@ flowchart LR
     chartStyle -->|"colorAt(i, n)"| chart
     groups --> qchart
     qchart -->|"setChart()"| view
-    view -->|"render() в QPdfWriter"| pdf
+    view -->|"IChartExporter::exportChart()<br/>PdfExporter: render() в QPdfWriter"| pdf
 ```
 
 По шагам:
 
-1. **Выбор файла.** `QItemSelectionModel` шлёт `selectionChanged`, и вызывается слот `selectFile`. По расширению он регистрирует в контейнере `SqliteReader` или `JsonReader`.
-2. **Чтение.** `GetObject<IDataReader>()` создаёт читателя и передаёт ему `ILogger`. `read(path)` возвращает `QVector<DataPoint>`, и этот вектор сохраняется в `points`.
+1. **Выбор файла.** `QItemSelectionModel` шлёт `selectionChanged`, и вызывается слот `selectFile`. По расширению он берёт из словаря `readers` получение `SqliteReader` или `JsonReader`.
+2. **Чтение.** Контейнер создаёт читателя и передаёт ему `ILogger`. `read(path)` возвращает `QVector<DataPoint>`, и этот вектор сохраняется в `points`.
    - `SqliteReader` открывает базу только для чтения и выполняет `SELECT Time, Value` из первой таблицы.
    - `JsonReader` разбирает массив и проверяет у каждой точки поля `time` (строка) и `value` (число).
-3. **Построение.** `redraw()` берёт из контейнера текущие `IChart` и `IChartStyle` и вызывает `buildGraf(points, style)`. График сжимает точки через `groupPoints`, создаёт серию Qt Charts (`QBarSeries` / `QPieSeries` / `QLineSeries`), красит элементы через `style.colorAt(i, n)` и возвращает готовый `QChart`.
+3. **Построение.** `redraw()` вызывает `buildGraf(points, style)` у текущего графика `currentChart` с текущим стилем `currentStyle`. График сжимает точки через `groupPoints`, создаёт серию Qt Charts (`QBarSeries` / `QPieSeries` / `QLineSeries`), красит элементы через `style.colorAt(i, n)` и возвращает готовый `QChart`.
 4. **Показ.** `chartView->setChart(...)` показывает новый график, старый `QChart` удаляется.
-5. **Смена типа или стиля.** В контейнере заменяется регистрация `IChart` / `IChartStyle`, и снова вызывается `redraw()` с теми же `points`. Файл не перечитывается.
-6. **Печать.** `printChart` спрашивает путь, создаёт `QPdfWriter` (A4, альбомная) и рисует в него то, что сейчас показывает `chartView` (`render`).
+5. **Смена типа или стиля.** Окно берёт новый график из `charts` или другой стиль и снова вызывает `redraw()` с теми же `points`. Файл не перечитывается.
+6. **Печать.** `printChart` спрашивает путь и передаёт `chartView` в `IChartExporter::exportChart`. `PdfExporter` создаёт `QPdfWriter` (A4, альбомная) и рисует в него то, что сейчас показывает `chartView` (`render`).
 
 ## Сборка
 
@@ -277,17 +298,43 @@ classDiagram
         }
     }
 
-    namespace gui {
-        class MainWindow {
-            -container : IOCContainer
+    namespace exporter {
+        class IChartExporter {
+            <<interface>>
+            +exportChart(chartView : QWidget, path : QString) bool
+            +fileFilter() QString
+            +defaultFileName() QString
+        }
+        class PdfExporter {
             -logger : ILogger
+            +PdfExporter(logger : ILogger)
+            +exportChart(chartView : QWidget, path : QString) bool
+            +fileFilter() QString
+            +defaultFileName() QString
+        }
+    }
+
+    namespace gui {
+        class AppCompositor {
+            <<utility>>
+            +CreateMainWindow(container : IOCContainer, parent : QWidget) MainWindow
+        }
+        class MainWindow {
+            -logger : ILogger
+            -readers : ReaderFactories
+            -charts : ChartFactories
+            -colorStyle : ObjectFactory~IChartStyle~
+            -grayStyle : ObjectFactory~IChartStyle~
+            -exporter : IChartExporter
+            -currentChart : IChart
+            -currentStyle : IChartStyle
             -points : QVector~DataPoint~
             -fileModel : QFileSystemModel
             -fileView : QTableView
             -chartTypeBox : QComboBox
             -grayCheck : QCheckBox
             -chartView : QChartView
-            +MainWindow(container : IOCContainer, parent : QWidget)
+            +MainWindow(logger, readers, charts, colorStyle, grayStyle, exporter, parent)
             -«slot» openFolder() void
             -«slot» selectFile(selected : QItemSelection, deselected : QItemSelection) void
             -«slot» changeChartType(index : int) void
@@ -305,25 +352,30 @@ classDiagram
     IChart <|.. BarChart
     IChart <|.. PieChart
     IChart <|.. LineChart
+    IChartExporter <|.. PdfExporter
     SqliteReader "1" --> "1" ILogger : logger
     JsonReader "1" --> "1" ILogger : logger
-    MainWindow "1" --> "1" IOCContainer : container
+    PdfExporter "1" --> "1" ILogger : logger
+    AppCompositor ..> IOCContainer : register
+    AppCompositor ..> MainWindow : create
     MainWindow "1" --> "1" ILogger : logger
+    MainWindow "1" --> "1" IChartExporter : exporter
+    MainWindow "1" --> "0..1" IChart : currentChart
+    MainWindow "1" --> "0..1" IChartStyle : currentStyle
     MainWindow "1" *-- "0..*" DataPoint : points
     MainWindow ..> IDataReader : use
-    MainWindow ..> IChart : use
-    MainWindow ..> IChartStyle : use
     IDataReader ..> DataPoint : create
     IChart ..> DataPoint : use
     IChart ..> IChartStyle : use
 ```
 
 Обозначения: `<|..` — реализация интерфейса, `*--` — композиция (агрегат владеет частью),
-`-->` — направленная ассоциация, `..>` — зависимость; в кавычках указана кратность концов связей.
+`-->` — направленная ассоциация, `..>` — зависимость (`register` — регистрирует реализации, `create` — создаёт);
+в кавычках указана кратность концов связей. `ObjectFactory<T>` — функция, возвращающая объект `T` из контейнера; `ReaderFactories` — словарь «расширение → ObjectFactory<IDataReader>», `ChartFactories` — список «название → ObjectFactory<IChart>».
 
 ### Диаграмма последовательности
 
-Сценарий «выбор файла → построение графика»: окно регистрирует реализацию в контейнере, получает объекты через `GetObject` и строит график, не зная конкретных классов.
+Сценарий «выбор файла → построение графика»: все реализации уже зарегистрированы в контейнере точкой композиции, окно берёт читателя из словаря по расширению и строит график, не зная конкретных классов.
 
 ```mermaid
 sequenceDiagram
@@ -335,12 +387,14 @@ sequenceDiagram
     participant S as ColorStyle
     participant V as QChartView
 
+    Note over W,C: при запуске CreateMainWindow зарегистрировала реализации в контейнере, окно получило словари, текущий график BarChart и стиль ColorStyle
+
     User->>W: выбирает файл .sqlite в списке
     activate W
     Note over W: слот selectFile()
 
-    W->>C: RegisterFactory: IDataReader → SqliteReader (зависимость ILogger)
-    W->>C: GetObject: IDataReader
+    W->>W: readers по ключу "sqlite"
+    W->>C: GetObject: SqliteReader
     C->>C: GetObject: ILogger
     C-->>W: новый SqliteReader(logger)
 
@@ -348,11 +402,6 @@ sequenceDiagram
     R-->>W: QVector of DataPoint
 
     Note over W: redraw()
-    W->>C: GetObject: IChart
-    C-->>W: BarChart
-    W->>C: GetObject: IChartStyle
-    C-->>W: ColorStyle
-
     W->>G: buildGraf(points, style)
     loop для каждого столбика
         G->>S: colorAt(i, n)

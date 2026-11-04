@@ -37,8 +37,14 @@ add_executable(${PROJECT_NAME}
     chart/LineChart.h
     chart/LineChart.cpp
 
+    exporter/IChartExporter.h
+    exporter/PdfExporter.h
+    exporter/PdfExporter.cpp
+
     gui/MainWindow.h
     gui/MainWindow.cpp
+    gui/AppCompositor.h
+    gui/AppCompositor.cpp
 
     main.cpp
 )
