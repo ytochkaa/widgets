@@ -32,7 +32,11 @@ MainWindow::MainWindow(IOCContainer& container, QWidget* parent)
     // Левая часть: кнопка выбора папки и список файлов
     QPushButton* folderButton = new QPushButton("Открыть папку");
 
+    // Стартовая папка: test_data из проекта, если она есть, иначе домашняя папка
     QString homePath = QDir::homePath();
+    if (QDir(TEST_DATA_DIR).exists()) {
+        homePath = TEST_DATA_DIR;
+    }
     fileModel = new QFileSystemModel(this);
     fileModel->setFilter(QDir::NoDotAndDotDot | QDir::Files);
     fileModel->setRootPath(homePath);

@@ -52,7 +52,6 @@ widgets/
 ├── style/        визуальные стили графиков
 ├── chart/        виды графиков
 ├── gui/          главное окно
-├── docs/         исходники UML-диаграмм (.mmd)
 └── test_data/    тестовые данные и тест-кейсы
 ```
 
@@ -101,6 +100,76 @@ widgets/
 
 Новый стиль или формат файла добавляется так же: наследник `IChartStyle` или `IDataReader` и одна регистрация в контейнере.
 
+## Как работает программа
+
+### Что такое MVC и как он используется
+
+**MVC (Model–View–Controller)** — способ разделить программу на три части, чтобы они меньше зависели друг от друга:
+
+- **Model (модель)** хранит данные и ничего не знает о том, как они показываются.
+- **View (представление)** показывает данные пользователю и не меняет их.
+- **Controller (контроллер)** принимает действия пользователя (клики, выбор в списке), меняет модель и просит представление обновиться.
+
+Так можно поменять внешний вид (например, столбики на круговую диаграмму) и не трогать данные. А данные можно загрузить из другого источника, не трогая отображение.
+
+В Qt используется вариант **Model/View**: контроллер отдельно не выделяется. Его роль делят представление, которое ловит клики, и модель выделения `QItemSelectionModel`.
+
+В программе MVC встречается на двух уровнях:
+
+| Роль | Список файлов (готовый Qt Model/View) | График (своя схема) |
+|------|--------------------------------------|----------------------------|
+| **Model** | `QFileSystemModel fileModel`: файлы выбранной папки | `QVector<DataPoint> points` в `MainWindow`: точки загруженного файла |
+| **View** | `QTableView fileView`: таблица с файлами | `QChartView chartView`, на котором лежит `QChart`, созданный `IChart::buildGraf` |
+| **Controller** | `QItemSelectionModel`: запоминает выбранную строку и шлёт `selectionChanged` | слоты `MainWindow`: `selectFile`, `changeChartType`, `changeStyle`, `printChart` |
+
+Модель графика не отдельный класс, а поле окна. Но правило MVC выполняется: точки не знают, как их нарисуют, а график строится из них заново при каждом изменении и сам данные не меняет.
+
+### Как хранятся данные
+
+- Одна точка — структура `DataPoint { QString time; double value; }`. Дата хранится строкой как есть (`"01.2024"`, `"2023-05-01 12:00"`), потому что используется только как подпись.
+- Все точки открытого файла лежат в одном месте, в поле `MainWindow::points` (`QVector<DataPoint>`). Файл читается целиком один раз, при выборе. При смене типа диаграммы или стиля файл не перечитывается, график строится из `points`.
+- Если файл не прочитался (ошибка или пустой), `points` не меняется и остаётся последний удачный график.
+- Сами `points` никогда не изменяются. Для графика `groupPoints` делает **временную копию**: 10 средних значений для столбчатой и круговой диаграмм, до 1000 для линейного графика.
+- Время жизни объектов из контейнера:
+  - `ILogger` и `IChartStyle` регистрируются через `RegisterInstance`, это один объект на всё приложение;
+  - `IDataReader` и `IChart` регистрируются через `RegisterFactory`, и при каждом `GetObject` создаётся новый объект. Он живёт, пока работает метод, и затем удаляется (`shared_ptr`).
+- Новый `QChart` передаётся в `chartView`, а предыдущий удаляется в `redraw()`.
+
+### Путь данных: от файла до графика и PDF
+
+```mermaid
+flowchart LR
+    file[("Файл .sqlite / .json")]
+    reader["IDataReader<br/>SqliteReader / JsonReader"]
+    points["MainWindow::points<br/>QVector#lt;DataPoint#gt;"]
+    chart["IChart<br/>BarChart / PieChart / LineChart"]
+    groups["groupPoints()<br/>временная копия: 10 или 1000 точек"]
+    style["IChartStyle<br/>ColorStyle / GrayStyle"]
+    qchart["QChart<br/>серии + оси"]
+    view["QChartView"]
+    pdf[("PDF")]
+
+    file -->|"read(path)"| reader
+    reader -->|"QVector#lt;DataPoint#gt;"| points
+    points -->|"buildGraf(points, style)"| chart
+    chart --> groups
+    style -->|"colorAt(i, n)"| chart
+    groups --> qchart
+    qchart -->|"setChart()"| view
+    view -->|"render() в QPdfWriter"| pdf
+```
+
+По шагам:
+
+1. **Выбор файла.** `QItemSelectionModel` шлёт `selectionChanged`, и вызывается слот `selectFile`. По расширению он регистрирует в контейнере `SqliteReader` или `JsonReader`.
+2. **Чтение.** `GetObject<IDataReader>()` создаёт читателя и передаёт ему `ILogger`. `read(path)` возвращает `QVector<DataPoint>`, и этот вектор сохраняется в `points`.
+   - `SqliteReader` открывает базу только для чтения и выполняет `SELECT Time, Value` из первой таблицы.
+   - `JsonReader` разбирает массив и проверяет у каждой точки поля `time` (строка) и `value` (число).
+3. **Построение.** `redraw()` берёт из контейнера текущие `IChart` и `IChartStyle` и вызывает `buildGraf(points, style)`. График сжимает точки через `groupPoints`, создаёт серию Qt Charts (`QBarSeries` / `QPieSeries` / `QLineSeries`), красит элементы через `style.colorAt(i, n)` и возвращает готовый `QChart`.
+4. **Показ.** `chartView->setChart(...)` показывает новый график, старый `QChart` удаляется.
+5. **Смена типа или стиля.** В контейнере заменяется регистрация `IChart` / `IChartStyle`, и снова вызывается `redraw()` с теми же `points`. Файл не перечитывается.
+6. **Печать.** `printChart` спрашивает путь, создаёт `QPdfWriter` (A4, альбомная) и рисует в него то, что сейчас показывает `chartView` (`render`).
+
 ## Сборка
 
 ### Qt Creator (qMake)
@@ -129,11 +198,9 @@ cmake --build .
 
 ## UML-диаграммы
 
-Исходники диаграмм лежат в папке [`docs`](docs).
-
 ### Диаграмма классов
 
-Классы сгруппированы по папкам проекта. Исходник: [`docs/class_diagram.mmd`](docs/class_diagram.mmd)
+Классы сгруппированы по папкам проекта.
 
 ```mermaid
 classDiagram
@@ -256,7 +323,7 @@ classDiagram
 
 ### Диаграмма последовательности
 
-Сценарий «выбор файла → построение графика»: окно регистрирует реализацию в контейнере, получает объекты через `GetObject` и строит график, не зная конкретных классов. Исходник: [`docs/sequence_diagram.mmd`](docs/sequence_diagram.mmd)
+Сценарий «выбор файла → построение графика»: окно регистрирует реализацию в контейнере, получает объекты через `GetObject` и строит график, не зная конкретных классов.
 
 ```mermaid
 sequenceDiagram
@@ -300,13 +367,18 @@ sequenceDiagram
 
 ### Диаграмма сигналов и слотов
 
-Сплошная стрелка — `connect(сигнал → слот)`, пунктир — прямой вызов метода. Исходник: [`docs/signal_slot.mmd`](docs/signal_slot.mmd)
+Сплошная стрелка — `connect(сигнал → слот)` из конструктора `MainWindow`. Пунктир — прямой вызов метода. Точечная стрелка — сигналы, которые Qt соединяет сам внутри Model/View при `fileView->setModel(fileModel)`.
 
 ```mermaid
 flowchart LR
+    subgraph MV["Qt Model/View (соединяется автоматически)"]
+        fileModel["QFileSystemModel fileModel"]
+        fileView["QTableView fileView"]
+        selectionModel["QItemSelectionModel"]
+    end
+
     subgraph Widgets["Виджеты (источники сигналов)"]
         folderButton["QPushButton «Открыть папку»"]
-        selectionModel["QItemSelectionModel (fileView)"]
         chartTypeBox["QComboBox chartTypeBox"]
         grayCheck["QCheckBox grayCheck"]
         printButton["QPushButton «Печать графика»"]
@@ -321,24 +393,28 @@ flowchart LR
         redraw["redraw()"]
     end
 
+    fileModel -. "rowsInserted(), dataChanged(), layoutChanged()" .-> fileView
+    fileView -. "клик по строке → select()" .-> selectionModel
+
     folderButton -- "clicked()" --> openFolder
-    selectionModel -- "selectionChanged()" --> selectFile
+    selectionModel -- "selectionChanged(selected, deselected)" --> selectFile
     chartTypeBox -- "currentIndexChanged(int)" --> changeChartType
     grayCheck -- "toggled(bool)" --> changeStyle
     printButton -- "clicked()" --> printChart
 
+    openFolder -. "setRootPath(dir)" .-> fileModel
     selectFile -. "вызов" .-> redraw
     changeChartType -. "вызов" .-> redraw
     changeStyle -. "вызов" .-> redraw
 ```
 
-| Источник (сигнал)                         | Приёмник (слот)               |
-|-------------------------------------------|-------------------------------|
-| `folderButton::clicked()`                 | `MainWindow::openFolder`      |
-| `QItemSelectionModel::selectionChanged()` | `MainWindow::selectFile`      |
-| `chartTypeBox::currentIndexChanged(int)`  | `MainWindow::changeChartType` |
-| `grayCheck::toggled(bool)`                | `MainWindow::changeStyle`     |
-| `printButton::clicked()`                  | `MainWindow::printChart`      |
+| Источник (сигнал)                         | Приёмник (слот)               | Что происходит |
+|-------------------------------------------|-------------------------------|----------------|
+| `folderButton::clicked()`                 | `MainWindow::openFolder`      | выбор папки, модель файлов перечитывает каталог |
+| `QItemSelectionModel::selectionChanged()` | `MainWindow::selectFile`      | чтение файла в `points` и `redraw()` |
+| `chartTypeBox::currentIndexChanged(int)`  | `MainWindow::changeChartType` | новая регистрация `IChart` и `redraw()` |
+| `grayCheck::toggled(bool)`                | `MainWindow::changeStyle`     | новая регистрация `IChartStyle` и `redraw()` |
+| `printButton::clicked()`                  | `MainWindow::printChart`      | сохранение `chartView` в PDF |
 
 ## Тестирование
 

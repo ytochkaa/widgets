@@ -6,6 +6,7 @@ TARGET = widgets
 TEMPLATE = app
 
 INCLUDEPATH += $$PWD
+DEFINES += $$shell_quote(TEST_DATA_DIR=\"$$PWD/test_data\")
 
 SOURCES += \
     logger/ConsoleLogger.cpp \
