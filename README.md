@@ -144,7 +144,7 @@ flowchart LR
     points["MainWindow::points<br/>QVector#lt;DataPoint#gt;"]
     chart["IChart<br/>BarChart / PieChart / LineChart"]
     groups["groupPoints()<br/>временная копия: 10 или 1000 точек"]
-    style["IChartStyle<br/>ColorStyle / GrayStyle"]
+    chartStyle["IChartStyle<br/>ColorStyle / GrayStyle"]
     qchart["QChart<br/>серии + оси"]
     view["QChartView"]
     pdf[("PDF")]
@@ -153,7 +153,7 @@ flowchart LR
     reader -->|"QVector#lt;DataPoint#gt;"| points
     points -->|"buildGraf(points, style)"| chart
     chart --> groups
-    style -->|"colorAt(i, n)"| chart
+    chartStyle -->|"colorAt(i, n)"| chart
     groups --> qchart
     qchart -->|"setChart()"| view
     view -->|"render() в QPdfWriter"| pdf
