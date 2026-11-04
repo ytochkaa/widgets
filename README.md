@@ -356,7 +356,16 @@ classDiagram
     SqliteReader "1" --> "1" ILogger : logger
     JsonReader "1" --> "1" ILogger : logger
     PdfExporter "1" --> "1" ILogger : logger
-    AppCompositor ..> IOCContainer : register
+    AppCompositor ..> IOCContainer : заполняет
+    IOCContainer ..> ConsoleLogger : «instance» ILogger
+    IOCContainer ..> ColorStyle : «instance»
+    IOCContainer ..> GrayStyle : «instance»
+    IOCContainer ..> SqliteReader : «factory»
+    IOCContainer ..> JsonReader : «factory»
+    IOCContainer ..> BarChart : «factory»
+    IOCContainer ..> PieChart : «factory»
+    IOCContainer ..> LineChart : «factory»
+    IOCContainer ..> PdfExporter : «factory» IChartExporter
     AppCompositor ..> MainWindow : create
     MainWindow "1" --> "1" ILogger : logger
     MainWindow "1" --> "1" IChartExporter : exporter
@@ -370,7 +379,8 @@ classDiagram
 ```
 
 Обозначения: `<|..` — реализация интерфейса, `*--` — композиция (агрегат владеет частью),
-`-->` — направленная ассоциация, `..>` — зависимость (`register` — регистрирует реализации, `create` — создаёт);
+`-->` — направленная ассоциация, `..>` — зависимость (`заполняет` — точка композиции регистрирует реализации в контейнере, `create` — создаёт);
+стрелки от `IOCContainer` показывают, что в нём зарегистрировано: `«instance»` — `RegisterInstance`, один объект на приложение, `«factory»` — `RegisterFactory`, новый объект на каждый запрос; после стереотипа указан интерфейс, под которым класс зарегистрирован, если он отличается от самого класса;
 в кавычках указана кратность концов связей. `ObjectFactory<T>` — функция, возвращающая объект `T` из контейнера; `ReaderFactories` — словарь «расширение → ObjectFactory<IDataReader>», `ChartFactories` — список «название → ObjectFactory<IChart>».
 
 ### Диаграмма последовательности
