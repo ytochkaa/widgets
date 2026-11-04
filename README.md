@@ -367,45 +367,44 @@ sequenceDiagram
 
 ### Диаграмма сигналов и слотов
 
-Сплошная стрелка — `connect(сигнал → слот)` из конструктора `MainWindow`. Пунктир — прямой вызов метода. Точечная стрелка — сигналы, которые Qt соединяет сам внутри Model/View при `fileView->setModel(fileModel)`.
+В верхней части блока — сигналы объекта, в нижней — слоты. Стрелка — `connect(сигнал → слот)` из конструктора `MainWindow`, на ней подписано, какой сигнал к какому слоту подключён. Над именем виджета указан его класс Qt.
 
 ```mermaid
-flowchart LR
-    subgraph MV["Qt Model/View (соединяется автоматически)"]
-        fileModel["QFileSystemModel fileModel"]
-        fileView["QTableView fileView"]
-        selectionModel["QItemSelectionModel"]
-    end
+classDiagram
+    direction LR
+    class folderButton {
+        <<QPushButton>>
+        clicked
+    }
+    class selectionModel {
+        <<QItemSelectionModel>>
+        selectionChanged
+    }
+    class chartTypeBox {
+        <<QComboBox>>
+        currentIndexChanged
+    }
+    class grayCheck {
+        <<QCheckBox>>
+        toggled
+    }
+    class printButton {
+        <<QPushButton>>
+        clicked
+    }
+    class MainWindow {
+        openFolder()
+        selectFile()
+        changeChartType()
+        changeStyle()
+        printChart()
+    }
 
-    subgraph Widgets["Виджеты (источники сигналов)"]
-        folderButton["QPushButton «Открыть папку»"]
-        chartTypeBox["QComboBox chartTypeBox"]
-        grayCheck["QCheckBox grayCheck"]
-        printButton["QPushButton «Печать графика»"]
-    end
-
-    subgraph Window["MainWindow (слоты)"]
-        openFolder["openFolder()"]
-        selectFile["selectFile()"]
-        changeChartType["changeChartType()"]
-        changeStyle["changeStyle()"]
-        printChart["printChart()"]
-        redraw["redraw()"]
-    end
-
-    fileModel -. "rowsInserted(), dataChanged(), layoutChanged()" .-> fileView
-    fileView -. "клик по строке → select()" .-> selectionModel
-
-    folderButton -- "clicked()" --> openFolder
-    selectionModel -- "selectionChanged(selected, deselected)" --> selectFile
-    chartTypeBox -- "currentIndexChanged(int)" --> changeChartType
-    grayCheck -- "toggled(bool)" --> changeStyle
-    printButton -- "clicked()" --> printChart
-
-    openFolder -. "setRootPath(dir)" .-> fileModel
-    selectFile -. "вызов" .-> redraw
-    changeChartType -. "вызов" .-> redraw
-    changeStyle -. "вызов" .-> redraw
+    folderButton --> MainWindow : clicked → openFolder
+    selectionModel --> MainWindow : selectionChanged → selectFile
+    chartTypeBox --> MainWindow : currentIndexChanged → changeChartType
+    grayCheck --> MainWindow : toggled → changeStyle
+    printButton --> MainWindow : clicked → printChart
 ```
 
 | Источник (сигнал)                         | Приёмник (слот)               | Что происходит |
