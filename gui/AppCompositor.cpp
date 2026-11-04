@@ -13,34 +13,28 @@
 
 std::unique_ptr<MainWindow> CreateMainWindow(IOCContainer& container, QWidget* parent)
 {
-    // Один объект на всё приложение
-    container.RegisterInstance<ILogger, ConsoleLogger>();
-    container.RegisterInstance<ColorStyle, ColorStyle>();
-    container.RegisterInstance<GrayStyle, GrayStyle>();
-
-    // Новый объект при каждом запросе; зависимость ILogger подставляет контейнер
-    container.RegisterFactory<SqliteReader, SqliteReader, ILogger>();
+    // В контейнере — классы с зависимостями: ILogger им подставляет контейнер
+    container.RegisterInstance<ILogger, ConsoleLogger>();                 // один объект на всё приложение
+    container.RegisterFactory<SqliteReader, SqliteReader, ILogger>();     // новый объект при каждом запросе
     container.RegisterFactory<JsonReader, JsonReader, ILogger>();
-    container.RegisterFactory<BarChart, BarChart>();
-    container.RegisterFactory<PieChart, PieChart>();
-    container.RegisterFactory<LineChart, LineChart>();
     container.RegisterFactory<IChartExporter, PdfExporter, ILogger>();
 
     // Контейнер хранит одну реализацию на тип, поэтому варианты выбора
-    // собраны в словари «ключ → получение объекта из контейнера»
+    // собраны в словари «ключ → получение объекта»
     ReaderFactories readers = {
         {"sqlite", [&container] { return container.GetObject<SqliteReader>(); }},
         {"json", [&container] { return container.GetObject<JsonReader>(); }},
     };
 
+    // Графики и стили не имеют зависимостей, поэтому создаются напрямую, без контейнера
     ChartFactories charts = {
-        {"BarChart", [&container] { return container.GetObject<BarChart>(); }},
-        {"PieChart", [&container] { return container.GetObject<PieChart>(); }},
-        {"LineChart", [&container] { return container.GetObject<LineChart>(); }},
+        {"BarChart", [] { return std::make_shared<BarChart>(); }},
+        {"PieChart", [] { return std::make_shared<PieChart>(); }},
+        {"LineChart", [] { return std::make_shared<LineChart>(); }},
     };
 
-    ObjectFactory<IChartStyle> colorStyle = [&container] { return container.GetObject<ColorStyle>(); };
-    ObjectFactory<IChartStyle> grayStyle = [&container] { return container.GetObject<GrayStyle>(); };
+    ObjectFactory<IChartStyle> colorStyle = [] { return std::make_shared<ColorStyle>(); };
+    ObjectFactory<IChartStyle> grayStyle = [] { return std::make_shared<GrayStyle>(); };
 
     return std::make_unique<MainWindow>(container.GetObject<ILogger>(), readers, charts, colorStyle, grayStyle,
                                         container.GetObject<IChartExporter>(), parent);

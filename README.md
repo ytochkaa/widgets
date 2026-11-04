@@ -81,26 +81,26 @@ widgets/
   - `IChartExporter` — интерфейс сохранения графика в файл
   - `PdfExporter` — сохранение в PDF (A4, альбомная ориентация)
 - `gui/`
-  - `AppCompositor` (`CreateMainWindow`) — точка композиции: регистрирует все реализации в IoC-контейнере и создаёт окно
+  - `AppCompositor` (`CreateMainWindow`) — точка композиции: регистрирует в IoC-контейнере классы с зависимостями, создаёт графики и стили и создаёт окно
   - `MainWindow` — главное окно: список файлов, настройки и область графика
 
 ### Внедрение зависимостей
 
-Все конкретные классы известны только точке композиции `CreateMainWindow` (`gui/AppCompositor.cpp`). При запуске она один раз регистрирует в `IOCContainer` все реализации:
+Все конкретные классы известны только точке композиции `CreateMainWindow` (`gui/AppCompositor.cpp`). При запуске она один раз регистрирует в `IOCContainer` классы, которым нужны зависимости:
 
 | Регистрация | Способ | Зависимости |
 |-------------|--------|-------------|
 | `ILogger` → `ConsoleLogger` | `RegisterInstance` — один объект на приложение | — |
 | `SqliteReader`, `JsonReader` | `RegisterFactory` — новый объект на каждый запрос | `ILogger` |
-| `BarChart`, `PieChart`, `LineChart` | `RegisterFactory` | — |
-| `ColorStyle`, `GrayStyle` | `RegisterInstance` | — |
 | `IChartExporter` → `PdfExporter` | `RegisterFactory` | `ILogger` |
 
-Контейнер хранит одну реализацию на тип, поэтому варианты, из которых пользователь выбирает во время работы, собраны в словари «ключ → получение объекта из контейнера»:
+Контейнер подставляет каждому из них `ILogger` через конструктор. Графики (`BarChart`, `PieChart`, `LineChart`) и стили (`ColorStyle`, `GrayStyle`) зависимостей не имеют, поэтому в контейнер не регистрируются: точка композиции создаёт их напрямую через `std::make_shared`.
 
-- `readers` — чтение по расширению файла: `"sqlite"` → `SqliteReader`, `"json"` → `JsonReader`;
-- `charts` — типы графиков в порядке списка: `BarChart`, `PieChart`, `LineChart`;
-- `colorStyle` и `grayStyle` — получение цветного и чёрно-белого стиля.
+Контейнер хранит одну реализацию на тип, поэтому варианты, из которых пользователь выбирает во время работы, собраны в словари «ключ → получение объекта»:
+
+- `readers` — чтение по расширению файла: `"sqlite"` → `SqliteReader`, `"json"` → `JsonReader` (объекты из контейнера);
+- `charts` — типы графиков в порядке списка: `BarChart`, `PieChart`, `LineChart` (создаются напрямую);
+- `colorStyle` и `grayStyle` — получение цветного и чёрно-белого стиля (создаются напрямую).
 
 `MainWindow` получает логгер, словари и экспортёр через конструктор. Окно знает только интерфейсы `ILogger`, `IDataReader`, `IChart`, `IChartStyle`, `IChartExporter`, ничего не регистрирует в контейнере и не подключает заголовки конкретных классов.
 
@@ -116,9 +116,9 @@ widgets/
 ### Как добавить новый график
 
 1. Создать в папке `chart/` класс-наследник `IChart` и реализовать в нём `buildGraf`.
-2. В `CreateMainWindow` зарегистрировать его (`RegisterFactory<НовыйГрафик, НовыйГрафик>()`) и добавить строку в словарь `charts`. Название появится в списке типов само, `MainWindow` не меняется.
+2. В `CreateMainWindow` добавить строку в словарь `charts`: `{"НовыйГрафик", [] { return std::make_shared<НовыйГрафик>(); }}`. Название появится в списке типов само, `MainWindow` не меняется.
 
-Новый стиль, формат файла или формат сохранения добавляется так же: наследник `IChartStyle`, `IDataReader` или `IChartExporter`, одна регистрация и одна строка в точке композиции.
+Новый стиль добавляется так же: наследник `IChartStyle` и строка в точке композиции. Новый формат файла или формат сохранения — наследник `IDataReader` или `IChartExporter`, регистрация в контейнере (с зависимостью `ILogger`) и строка в словаре `readers` или передача экспортёра в окно.
 
 ## Как работает программа
 
@@ -151,8 +151,9 @@ widgets/
 - Если файл не прочитался (ошибка или пустой), `points` не меняется и остаётся последний удачный график.
 - Сами `points` никогда не изменяются. Для графика `groupPoints` делает **временную копию**: 10 средних значений для столбчатой и круговой диаграмм, до 1000 для линейного графика.
 - Время жизни объектов из контейнера:
-  - `ILogger`, `ColorStyle` и `GrayStyle` регистрируются через `RegisterInstance`, это один объект на всё приложение;
-  - читатели, графики и `PdfExporter` регистрируются через `RegisterFactory`, и при каждом `GetObject` создаётся новый объект (`shared_ptr`). Читатель живёт, пока работает `selectFile`; текущий график хранится в `currentChart` до смены типа; экспортёр создаётся один раз и хранится в окне.
+  - `ILogger` регистрируется через `RegisterInstance`, это один объект на всё приложение;
+  - читатели и `PdfExporter` регистрируются через `RegisterFactory`, и при каждом `GetObject` создаётся новый объект (`shared_ptr`). Читатель живёт, пока работает `selectFile`; экспортёр создаётся один раз и хранится в окне.
+  - Графики и стили создаются через `std::make_shared` при каждом выборе: текущие хранятся в `currentChart` и `currentStyle` до следующей смены.
   - Контейнер создаётся в `main` раньше окна, поэтому живёт дольше него: словари окна обращаются к контейнеру во время работы.
 - Новый `QChart` передаётся в `chartView`, а предыдущий удаляется в `redraw()`.
 
@@ -358,14 +359,14 @@ classDiagram
     PdfExporter "1" --> "1" ILogger : logger
     AppCompositor ..> IOCContainer : заполняет
     IOCContainer ..> ConsoleLogger : «instance» ILogger
-    IOCContainer ..> ColorStyle : «instance»
-    IOCContainer ..> GrayStyle : «instance»
     IOCContainer ..> SqliteReader : «factory»
     IOCContainer ..> JsonReader : «factory»
-    IOCContainer ..> BarChart : «factory»
-    IOCContainer ..> PieChart : «factory»
-    IOCContainer ..> LineChart : «factory»
     IOCContainer ..> PdfExporter : «factory» IChartExporter
+    AppCompositor ..> BarChart : create
+    AppCompositor ..> PieChart : create
+    AppCompositor ..> LineChart : create
+    AppCompositor ..> ColorStyle : create
+    AppCompositor ..> GrayStyle : create
     AppCompositor ..> MainWindow : create
     MainWindow "1" --> "1" ILogger : logger
     MainWindow "1" --> "1" IChartExporter : exporter
@@ -385,7 +386,7 @@ classDiagram
 
 ### Диаграмма последовательности
 
-Сценарий «выбор файла → построение графика»: все реализации уже зарегистрированы в контейнере точкой композиции, окно берёт читателя из словаря по расширению и строит график, не зная конкретных классов.
+Сценарий «выбор файла → построение графика»: классы с зависимостями уже зарегистрированы в контейнере точкой композиции, окно берёт читателя из словаря по расширению и строит график, не зная конкретных классов.
 
 ```mermaid
 sequenceDiagram
@@ -397,7 +398,7 @@ sequenceDiagram
     participant S as ColorStyle
     participant V as QChartView
 
-    Note over W,C: при запуске CreateMainWindow зарегистрировала реализации в контейнере, окно получило словари, текущий график BarChart и стиль ColorStyle
+    Note over W,C: при запуске CreateMainWindow зарегистрировала читатели в контейнере, окно получило словари, текущий график BarChart и стиль ColorStyle
 
     User->>W: выбирает файл .sqlite в списке
     activate W
